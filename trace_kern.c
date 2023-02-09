@@ -1,4 +1,5 @@
 #include <linux/bpf.h>
+#include <linux/if.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
@@ -19,6 +20,7 @@ struct net_device {
     /* Structure does not need to contain all entries,
      * as "preserve_access_index" will use BTF to fix this. */
     int ifindex;
+    char name[IFNAMSIZ];
     // to extract net namespace see dev_net_set in kernel
     // SO_NETNS_COOKIE ioctl to learn netns cookie
 } __attribute__((preserve_access_index));
@@ -53,6 +55,8 @@ trace_pkt(struct xdp_buff *xdp, __u32 hook_index, int res) {
         .ifindex = xdp->rxq->dev->ifindex,
         .rx_queue = xdp->rxq->queue_index,
     };
+
+    __builtin_memcpy(&meta.if_name, xdp->rxq->dev->name, IFNAMSIZ);
 
     meta.pkt_len = (__u32)(data_end - data);
     meta.cap_len = meta.pkt_len > snap_len ? snap_len : meta.pkt_len;

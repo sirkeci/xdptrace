@@ -115,7 +115,6 @@ handle_pkt(void *private_data,
         } *sample = (void *)event;
         const int hook_index = sample->meta.hook_index;
         const struct xdp_prog *prog = &ctx->prog[hook_index / 2];
-        const char *ifname = "ifname";
         if (hook_index & 1) {
             static const char map[][16] = {
                 [XDP_ABORTED] = "ABORTED",
@@ -132,10 +131,10 @@ handle_pkt(void *private_data,
             } else {
                 sprintf(verdict, "%d", sample->meta.res);
             }
-            printf("%s: %s -> %s\t\n", ifname, prog->name.name, verdict);
+            printf("%s: %s -> %s\t\n", sample->meta.if_name, prog->name.name, verdict);
             ++ctx->packet_id;
         } else {
-            printf("%s: -> %s\t\n", ifname, prog->name.name);
+            printf("%s: -> %s\t\n", sample->meta.if_name, prog->name.name);
         }
 
         // TODO: pipe packet through tcpdump, sample.pkt, lengths in sample->meta
