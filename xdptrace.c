@@ -93,6 +93,21 @@ out_close:
     return rc;
 }
 
+static const char *
+xdp_verdict_to_str(int verdict, char *buf, size_t sz) {
+    static const char map[][16] = {
+        [XDP_ABORTED] = "ABORTED",
+        [XDP_DROP] = "DROP",
+        [XDP_PASS] = "PASS",
+        [XDP_TX] = "TX",
+        [XDP_REDIRECT] = "REDIRECT",
+    };
+    if (verdict < sizeof(map) / sizeof(map[0]) && *map[verdict])
+        return map[verdict];
+    snprintf(buf, sz, "%d", verdict);
+    return buf;
+}
+
 struct handle_pkt_ctx {
     const struct xdp_prog *prog;
     __u64 packet_id;
@@ -116,22 +131,11 @@ handle_pkt(void *private_data,
         const int hook_index = sample->meta.hook_index;
         const struct xdp_prog *prog = &ctx->prog[hook_index / 2];
         if (hook_index & 1) {
-            static const char map[][16] = {
-                [XDP_ABORTED] = "ABORTED",
-                [XDP_DROP] = "DROP",
-                [XDP_PASS] = "PASS",
-                [XDP_TX] = "TX",
-                [XDP_REDIRECT] = "REDIRECT",
-            };
-            char verdict[sizeof(map[0])];
-            if (sample->meta.res < (sizeof(map)/sizeof(map[0]))
-                && map[sample->meta.res]
-            ) {
-                strcpy(verdict, map[sample->meta.res]);
-            } else {
-                sprintf(verdict, "%d", sample->meta.res);
-            }
-            printf("%s: %s -> %s\t\n", sample->meta.if_name, prog->name.name, verdict);
+            char verdict[8];
+            printf("%s: %s -> %s\t\n",
+                   sample->meta.if_name, prog->name.name,
+                   xdp_verdict_to_str(sample->meta.res, verdict, sizeof(verdict))
+            );
             ++ctx->packet_id;
         } else {
             printf("%s: -> %s\t\n", sample->meta.if_name, prog->name.name);
