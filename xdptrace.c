@@ -6,10 +6,14 @@
 #include <bpf/btf.h>
 #include <bpf/libbpf.h>
 #include <linux/perf_event.h>
+#include <getopt.h>
 
 #include "xdptrace.h"
 #include "trace_kern.skel.h"
 #include "trace_meta.h"
+#include "xpcapng.h"
+#include "fasthash.h"
+#include "hashmap.h"
 
 
 bool verbose;
@@ -75,7 +79,7 @@ xdp_prog_init_with_id(int id, struct xdp_prog *buf, struct xdp_prog **prog) {
     if (bpf_prog_full_name(buf->btf, sname, &buf->name) != 0
         || parse_xdp_prog_meta(buf->btf, buf->name, &buf->meta) != 0
     ) {
-        rc = -1;
+        rc = keep_going ? 0 : -1;
         goto out_free_btf;
     }
 
@@ -110,8 +114,42 @@ xdp_verdict_to_str(int verdict, char *buf, size_t sz) {
 
 struct handle_pkt_ctx {
     const struct xdp_prog *prog;
+    FILE *text_output;
+    struct xpcapng_dumper *pcap;
+    struct hashmap ifmap; // ifkey -> long
+
     __u64 packet_id;
+
+    int ifindex;
+    char if_name[IFNAMSIZ];
 };
+
+struct ifkey {
+    char  if_name[IFNAMSIZ];
+    __u64 labeli;
+} __attribute__((aligned(sizeof(__u64))));
+
+static size_t
+ifkey_hash_fn(long key, void *ctx) {
+    (void)ctx;
+    const struct ifkey *ifkey = (typeof(ifkey))key;
+
+    struct fh64 fh64 = fh64_init(0, 32);
+    for (int i = 0; i < 3; ++i) {
+        static_assert(sizeof(*ifkey) == sizeof(__u64) * 3, "");
+        fh64 = fh64_update(fh64, ((const __u64 *)ifkey)[i]);
+    }
+    return fh64_final(fh64);
+}
+
+static bool
+ifkey_equal_fn(long k1, long k2, void *ctx) {
+    (void)ctx;
+    return memcmp((const struct ifkey *)k1, (const struct ifkey *)k2,
+                  sizeof(struct ifkey)) == 0;
+}
+
+#define IFMAP_INIT() HASHMAP_INIT(ifkey_hash_fn, ifkey_equal_fn, 0)
 
 static enum bpf_perf_event_ret
 handle_pkt(void *private_data,
@@ -128,23 +166,107 @@ handle_pkt(void *private_data,
             __u8 pkt[];
 
         } *sample = (void *)event;
+
         const int hook_index = sample->meta.hook_index;
         const struct xdp_prog *prog = &ctx->prog[hook_index / 2];
-        if (hook_index & 1) {
-            char verdict[8];
-            printf("%s: %s -> %s\t\n",
-                   sample->meta.if_name, prog->name.name,
-                   xdp_verdict_to_str(sample->meta.res, verdict, sizeof(verdict))
-            );
+        const struct xdp_meta *meta = &prog->meta.entry;
+
+        // A trace is comprised of 1+ <entry> samples and a single <exit>
+        // sample.  Kernel-user channel is lossy though, therefore we
+        // might observe <entry> on if_1 followed by <entry> on if_2.
+        // Start a new trace if the interface is not as expected.
+        // Note: comparing both index and name as neither is unique when
+        // multiple namespaces are involved.
+        //
+        // New trace starting?
+        if (ctx->ifindex != sample->meta.ifindex
+            || strcmp(ctx->if_name, sample->meta.if_name)
+        ) {
+            ctx->ifindex = sample->meta.ifindex;
+            strcpy(ctx->if_name, sample->meta.if_name);
             ++ctx->packet_id;
-        } else {
-            printf("%s: -> %s\t\n", sample->meta.if_name, prog->name.name);
+
+            if (ctx->text_output)
+                fprintf(ctx->text_output, "%s:\n", sample->meta.if_name);
         }
 
-        // TODO: pipe packet through tcpdump, sample.pkt, lengths in sample->meta
-        // prog->meta.{entry,exit} conveys linktype and pseudo_sz (also
-        // pseudo_type_id to decode and pretty-print pseudo header
-        // according to prog->btf).
+        const char *label;
+        __u64 labeli; // uniquely identifies label + link_type
+        char verdict[8];
+
+        if (hook_index & 1) {
+            // <Exit> sample.
+            // Reset interface so that the subsequent packet will
+            // satisfy the check above, starting a new trace
+            ctx->ifindex = 0;
+            ctx->if_name[0] = 0;
+
+            if (sample->meta.res == XDP_PASS
+                || sample->meta.res == XDP_TX
+                || sample->meta.res == XDP_REDIRECT
+            ) {
+                meta = &prog->meta.exit;
+            }
+
+            label = xdp_verdict_to_str(sample->meta.res, verdict, sizeof(verdict));
+            labeli = ~(__u64)sample->meta.res;
+        } else {
+            // <Entry> sample.
+            label = prog->name.name;
+            labeli = hook_index;
+        }
+
+        if (ctx->text_output)
+            fprintf(ctx->text_output, "  %s\n", label);
+
+        // Lookup or create PCAP interface record
+        long pcap_ifindex;
+        struct ifkey transient_ifkey = { .labeli = labeli };
+        memcpy(transient_ifkey.if_name, sample->meta.if_name, sizeof(sample->meta.if_name));
+        if (!hashmap__find(&ctx->ifmap, &transient_ifkey, &pcap_ifindex)) {
+            char pcap_if_name[256];
+            snprintf(
+                pcap_if_name, sizeof(pcap_if_name), "%s:%s",
+                sample->meta.if_name, label
+            );
+            pcap_ifindex = xpcapng_dump_add_interface(
+                ctx->pcap, 262144, pcap_if_name, 0, 0, 0, 0, 0,
+                // tcpdump doesn't support multiple interfaces with
+                // different link types; wrap in PPI if piping through tcpdump
+                ctx->text_output ? 192 /* LINKTYPE_PPI */ : meta->link_type
+            );
+            if (pcap_ifindex < 0) {
+                // TODO fail
+            }
+            struct ifkey *ifkey = malloc(sizeof(*ifkey));
+            if (!ifkey) {
+                // TODO fail
+            }
+            memcpy(ifkey, &transient_ifkey, sizeof(*ifkey));
+            if (hashmap__set(&ctx->ifmap, ifkey, pcap_ifindex, NULL, NULL) != 0) {
+                // TODO fail
+            }
+        }
+
+        void *pkt = &sample->pkt[0] + meta->pseudo_sz;
+        __u32 pkt_len = sample->meta.pkt_len - meta->pseudo_sz;
+        __u32 cap_len = sample->meta.cap_len - meta->pseudo_sz;
+
+        struct xpcapng_epb_options_s opts = {
+            .packetid = (void *)&ctx->packet_id,
+            .ppi_linktype = ctx->text_output ? meta->link_type : 0,
+        };
+
+        if (meta->pseudo_type_id > 0) {
+            opts.comment = "TODO: pseudohdr content appears here";
+        }
+
+        if (!xpcapng_dump_enhanced_pkt(
+                ctx->pcap, pcap_ifindex, pkt, pkt_len, cap_len, 0, &opts
+            )) {
+            // TODO fail
+        }
+
     }
 
     return LIBBPF_PERF_EVENT_CONT;
@@ -155,6 +277,23 @@ int main(int argc, char **argv) {
     libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 
     verbose = !!getenv("VERBOSE");
+
+    struct {
+        const char *output_filename;
+        bool e_flag: 1;
+    } opts = {};
+
+    // Parse command line
+    int opt;
+    while ((opt = getopt(argc, argv, "w:e")) != -1) {
+
+        switch (opt) {
+        case 'w':
+            opts.output_filename = optarg; break;
+        case 'e':
+            opts.e_flag = true; break;
+        }
+    }
 
     enum { N = 128 }; // TODO
     struct xdp_prog prog[N];
@@ -208,7 +347,7 @@ int main(int argc, char **argv) {
         }
 
         prog[i].tk->rodata->hook_index = i * 2;
-        prog[i].tk->rodata->snap_len = 256;
+        prog[i].tk->rodata->snap_len = 512;
 
         if (i != 0) { // Fold maps
             if ( bpf_map__reuse_fd(
@@ -253,7 +392,10 @@ int main(int argc, char **argv) {
         .sample_period = 1,
         .wakeup_events = 1,
     };
-    struct handle_pkt_ctx ctx = { .prog = prog, .packet_id = 1 };
+    struct handle_pkt_ctx ctx = {
+        .prog = prog, .packet_id = 1,
+        .ifmap = IFMAP_INIT(),
+    };
     struct perf_buffer_raw_opts perf_opts = {
         .attr = &perf_attr,
         .event_cb = handle_pkt,
@@ -264,6 +406,31 @@ int main(int argc, char **argv) {
         bpf_map__fd(prog[0].tk->maps.trace_perf_map),
         256, &perf_opts
     );
+
+    FILE *pcap_output = stdout;
+
+    if (opts.output_filename) {
+        if (strcmp(opts.output_filename, "-"))
+            pcap_output = fopen(opts.output_filename, "wb");
+        if (!pcap_output) {
+            fprintf(stderr, "Error opening '%s': %s\n",
+                    opts.output_filename, strerror(errno));
+            return EXIT_FAILURE;
+        }
+    } else {
+        char cmd[128] = "/usr/bin/tcpdump -tnlr -";
+        if (opts.e_flag)
+            strcat(cmd, " -e");
+
+        ctx.text_output = stdout;
+        pcap_output = popen(cmd, "w");
+        if (!pcap_output) {
+            fprintf(stderr, "Error spawning tcpdump: %s", strerror(errno));
+            return EXIT_FAILURE;
+        }
+    }
+
+    ctx.pcap = xpcapng_dump_open(pcap_output, 0, 0, 0, 0);
 
     for (;;) {
         perf_buffer__poll(perf, 1000);

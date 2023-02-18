@@ -5,5 +5,5 @@ include(bpf)
 set(CMAKE_CXX_STANDARD 20)
 
 bpf_add_library(trace_kern trace_kern.c)
-add_executable(xdptrace xdptrace.c prog_meta.c)
+add_executable(xdptrace xdptrace.c prog_meta.c xpcapng.c hashmap.c)
 target_link_libraries(xdptrace trace_kern bpf)

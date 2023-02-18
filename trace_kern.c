@@ -37,7 +37,6 @@ struct xdp_buff {
     void *data_end;
     void *data_meta;
     void *data_hard_start;
-    unsigned long handle;
     struct xdp_rxq_info *rxq;
 } __attribute__((preserve_access_index));
 
@@ -67,7 +66,7 @@ trace_pkt(struct xdp_buff *xdp, __u32 hook_index, int res) {
 }
 
 
-SEC("fentry/xdp_tracce_entry__")
+SEC("fentry/xdp_trace_entry__")
 int BPF_PROG(xdp_entry_hook, struct xdp_buff *xdp) {
 
     // BPF_PROG macro adds context param which we don't use
