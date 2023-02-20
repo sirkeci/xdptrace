@@ -127,7 +127,8 @@ struct handle_pkt_ctx {
 struct ifkey {
     char  if_name[IFNAMSIZ];
     __u64 labeli;
-} __attribute__((aligned(sizeof(__u64))));
+    __u64 link_type;
+};
 
 static size_t
 ifkey_hash_fn(long key, void *ctx) {
@@ -135,8 +136,8 @@ ifkey_hash_fn(long key, void *ctx) {
     const struct ifkey *ifkey = (typeof(ifkey))key;
 
     struct fh64 fh64 = fh64_init(0, 32);
-    for (int i = 0; i < 3; ++i) {
-        static_assert(sizeof(*ifkey) == sizeof(__u64) * 3, "");
+    for (int i = 0; i < 4; ++i) {
+        static_assert(sizeof(*ifkey) == sizeof(__u64) * 4, "");
         fh64 = fh64_update(fh64, ((const __u64 *)ifkey)[i]);
     }
     return fh64_final(fh64);
@@ -191,7 +192,7 @@ handle_pkt(void *private_data,
         }
 
         const char *label;
-        __u64 labeli; // uniquely identifies label + link_type
+        __u64 labeli; // uniquely identifies the label
         char verdict[8];
 
         if (hook_index & 1) {
@@ -221,7 +222,7 @@ handle_pkt(void *private_data,
 
         // Lookup or create PCAP interface record
         long pcap_ifindex;
-        struct ifkey transient_ifkey = { .labeli = labeli };
+        struct ifkey transient_ifkey = { .labeli = labeli, .link_type = meta->link_type };
         memcpy(transient_ifkey.if_name, sample->meta.if_name, sizeof(sample->meta.if_name));
         if (!hashmap__find(&ctx->ifmap, &transient_ifkey, &pcap_ifindex)) {
             char pcap_if_name[256];
