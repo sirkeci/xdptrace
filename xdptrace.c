@@ -7,6 +7,7 @@
 #include <bpf/libbpf.h>
 #include <linux/perf_event.h>
 #include <getopt.h>
+#include <pcap/dlt.h>
 
 #include "xdptrace.h"
 #include "trace_kern.skel.h"
@@ -234,7 +235,7 @@ handle_pkt(void *private_data,
                 ctx->pcap, 262144, pcap_if_name, 0, 0, 0, 0, 0,
                 // tcpdump doesn't support multiple interfaces with
                 // different link types; wrap in PPI if piping through tcpdump
-                ctx->text_output ? 192 /* LINKTYPE_PPI */ : meta->link_type
+                ctx->text_output ? DLT_PPI : meta->link_type
             );
             if (pcap_ifindex < 0) {
                 // TODO fail
