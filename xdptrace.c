@@ -77,8 +77,8 @@ xdp_prog_init_with_id(int id, struct xdp_prog *buf, struct xdp_prog **prog) {
     strcpy(sname.name, info.name);
     sname.id = id;
 
-    if (bpf_prog_full_name(buf->btf, sname, &buf->name) != 0
-        || parse_xdp_prog_meta(buf->btf, buf->name, &buf->meta) != 0
+    if (failed(bpf_prog_full_name(buf->btf, sname, &buf->name))
+        || failed(parse_xdp_prog_meta(buf->btf, buf->name, &buf->meta))
     ) {
         rc = keep_going ? 0 : -1;
         goto out_free_btf;

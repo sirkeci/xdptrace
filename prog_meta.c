@@ -12,7 +12,7 @@
 // Even if the name wasn't truncated in the first place, scan BTF
 // anyway.  This is to ensure that memory management and requirements on
 // the BTF are the same for both truncated and pristine names.
-int
+struct rc
 bpf_prog_full_name(struct btf *btf, struct bpf_prog_short_name short_name,
                    struct bpf_prog_name *name) {
 
@@ -37,7 +37,7 @@ bpf_prog_full_name(struct btf *btf, struct bpf_prog_short_name short_name,
             fprintf(stderr, "Failed to determine the full name of %s (%d): "
                     "ambiguous prefix, possible matches '%s', '%s'\n",
                     short_name.name, short_name.id, match, name);
-            return -1;
+            return FAILURE;
         }
 
         match = name;
@@ -47,12 +47,12 @@ bpf_prog_full_name(struct btf *btf, struct bpf_prog_short_name short_name,
         fprintf(stderr, "Failed to determine the full name of %s (%d): "
                 "no matches found in BTF\n",
                 short_name.name, short_name.id);
-        return -1;
+        return FAILURE;
     }
 
     name->name = match;
     name->id = short_name.id;
-    return 0;
+    return SUCCESS;
 }
 
 // Locate VAR 'xdp_metadata_<progname>' and return the type id
@@ -85,17 +85,17 @@ locate_xdp_prog_meta(struct btf *btf, struct bpf_prog_name progname) {
 
 // Parse uint as encoded by __uint(name, val) macro (bpf/bpf_helpers.h).
 // It expands into int (*name) [val], a pointer to array of [val] ints.
-static int
+static struct rc
 meta__uint(const struct btf *btf, const struct btf_member *m, __u32 *val) {
     const struct btf_type *pt = btf__type_by_id(btf, m->type);
-    if (!pt || !btf_is_ptr(pt)) return -1;
+    if (!pt || !btf_is_ptr(pt)) return FAILURE;
 
     const struct btf_type *at = btf__type_by_id(btf, pt->type);
 
-    if (!at || !btf_is_array(at)) return -1;
+    if (!at || !btf_is_array(at)) return FAILURE;
 
     *val = btf_array(at)->nelems;
-    return 0;
+    return SUCCESS;
 }
 
 // Parse type as encoded by __type(name, val) macro (bpf/bpf_helpers.h).
@@ -107,7 +107,7 @@ meta__type(const struct btf *btf, const struct btf_member *m) {
 }
 
 // Parse XDP_METADATA() section for the particular program.
-int
+struct rc
 parse_xdp_prog_meta(struct btf *btf, struct bpf_prog_name progname,
                     struct xdp_prog_meta *meta) {
 
@@ -125,13 +125,13 @@ parse_xdp_prog_meta(struct btf *btf, struct bpf_prog_name progname,
     int tid = locate_xdp_prog_meta(btf, progname);
     if (tid < 0) {
         // Missing metadata is OK
-        return 0;
+        return SUCCESS;
     }
 
     const struct btf_type *t = btf__type_by_id(btf, tid);
     if (!t || !btf_is_struct(t)) {
         fprintf(stderr, "Malformed metadata for %s (%d)\n", progname.name, progname.id);
-        return -1;
+        return FAILURE;
     }
 
     const struct btf_member *member = btf_members(t);
@@ -141,10 +141,10 @@ parse_xdp_prog_meta(struct btf *btf, struct bpf_prog_name progname,
 
         if (!strcmp(name, "link_type")) {
             __u32 link_type;
-            if (meta__uint(btf, &member[i], &link_type) != 0) {
+            if (failed(meta__uint(btf, &member[i], &link_type))) {
                 fprintf(stderr, "Error parsing 'link_type' for %s (%d)\n",
                         progname.name, progname.id);
-                return -1;
+                return FAILURE;
             }
             meta->entry.link_type = link_type;
             continue;
@@ -156,7 +156,7 @@ parse_xdp_prog_meta(struct btf *btf, struct bpf_prog_name progname,
             if (tid < 0 || (sz = btf__resolve_size(btf, tid)) < 0) {
                 fprintf(stderr, "Error parsing 'pseudo' for %s (%d)\n",
                         progname.name, progname.id);
-                return -1;
+                return FAILURE;
             }
             meta->entry.pseudo_sz = sz;
             meta->entry.pseudo_type_id = tid;
@@ -169,5 +169,5 @@ parse_xdp_prog_meta(struct btf *btf, struct bpf_prog_name progname,
         }
     }
 
-    return 0;
+    return SUCCESS;
 }

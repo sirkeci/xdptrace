@@ -4,6 +4,13 @@
 
 struct btf;
 
+// type-safe error indication
+struct rc { bool success__; };
+static inline bool failed(struct rc rc) { return !rc.success__; }
+static inline bool succeeded(struct rc rc) { return rc.success__; }
+#define FAILURE (struct rc){ false }
+#define SUCCESS (struct rc){ true }
+
 // Includes ID to improve error reporting (name might be non-unique)
 struct bpf_prog_name {
     const char *name;
@@ -29,12 +36,12 @@ struct xdp_prog_meta {
 // BPF program name as reported by introspection APIs is limited to 15 chars.
 // Find the full name using BTF.  The returned pointer refers to a
 // string inside the passed BTF (no copying).
-int
+struct rc
 bpf_prog_full_name(struct btf *btf, struct bpf_prog_short_name short_name,
                    struct bpf_prog_name *name);
 
 // Parse XDP_METADATA() section for the particular program.
-int
+struct rc
 parse_xdp_prog_meta(struct btf *btf, struct bpf_prog_name name,
                     struct xdp_prog_meta *meta);
 
