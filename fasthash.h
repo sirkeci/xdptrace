@@ -35,6 +35,6 @@ static __always_inline struct fh64 fh64_update(struct fh64 state, __u64 data) {
 }
 
 // Produce the final hash value
-static __always_inline uint64_t fh64_final(struct fh64 state) {
+static __always_inline __u64 fh64_final(struct fh64 state) {
     return fh64_mix__(state.h);
 }

@@ -1,8 +1,10 @@
 #pragma once
 #include <stdbool.h>
 #include <linux/bpf.h>
+#include <sys/types.h>
 
 struct btf;
+extern bool verbose;
 
 // type-safe error indication
 struct rc { bool success__; };
@@ -45,4 +47,33 @@ struct rc
 parse_xdp_prog_meta(struct btf *btf, struct bpf_prog_name name,
                     struct xdp_prog_meta *meta);
 
-extern bool verbose;
+///////////////////////////////////////////////////////////////////////
+
+struct xdp_prog {
+    struct bpf_prog_name  name;
+    int                   prog_fd;
+    struct btf           *btf;
+
+    struct xdp_prog_meta  meta;
+
+    struct trace_kern    *tk;
+};
+
+struct consumer_params {
+    bool e_flag;
+    sigset_t *term_sigs; // the caller MUST block these sigs for termination to work
+};
+
+struct rc
+consumer_run_emit_pcapng(
+    int map_fd, struct xdp_prog *progs,
+    const char *output_path, const struct consumer_params *params
+);
+
+struct rc
+consumer_run_emit_text(
+    int map_fd, struct xdp_prog *progs,
+    const struct consumer_params *params
+);
+
+///////////////////////////////////////////////////////////////////////
