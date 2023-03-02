@@ -5,16 +5,13 @@
 #include <bpf/bpf.h>
 #include <bpf/btf.h>
 #include <bpf/libbpf.h>
-#include <linux/perf_event.h>
 #include <getopt.h>
-#include <pcap/dlt.h>
+#include <signal.h>
+#include <sys/eventfd.h>
 
 #include "xdptrace.h"
 #include "trace_kern.skel.h"
 #include "trace_meta.h"
-#include "xpcapng.h"
-#include "fasthash.h"
-#include "hashmap.h"
 
 
 bool verbose;
@@ -88,7 +85,30 @@ out_close:
     return rc;
 }
 
+static int term_eventfd;
+
+void sig_handler(int sig) {
+    (void)sig;
+    __u64 v = 1;
+    write(term_eventfd, &v, sizeof(v));
+}
+
 int main(int argc, char **argv) {
+
+    struct sigaction sa = {
+        .sa_handler = sig_handler,
+        // the handler is reset to default action (term) once it fires;
+        // the second ^C terminates the app if we get stuck in the clean
+        // shutdown after the first ^C
+        .sa_flags = SA_RESETHAND | SA_RESTART
+    };
+    if ((term_eventfd = eventfd(0, EFD_CLOEXEC)) == -1
+        || sigaction(SIGINT, &sa, NULL) != 0
+        || sigaction(SIGTERM, &sa, NULL) != 0
+       ) {
+        LOG_INTERNAL_ERROR();
+        return EXIT_FAILURE;
+    }
 
     libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 
@@ -198,14 +218,15 @@ int main(int argc, char **argv) {
     if (verbose)
         fprintf(stderr, "Ready to go\n");
 
-    int map_fd = bpf_map__fd(prog[0].tk->maps.trace_perf_map);
+    consumer_params.map_fd = bpf_map__fd(prog[0].tk->maps.trace_perf_map);
+    consumer_params.term_eventfd = term_eventfd;
+    consumer_params.progs = prog;
 
     if (output_filename) {
-        if (failed(consumer_run_emit_pcapng(
-                map_fd, prog, output_filename, &consumer_params
-            ))) return EXIT_FAILURE;
+        if (failed(consumer_run_emit_pcapng(&consumer_params, output_filename)))
+            return EXIT_FAILURE;
     } else {
-        if (failed(consumer_run_emit_text(map_fd, prog, &consumer_params)))
+        if (failed(consumer_run_emit_text(&consumer_params)))
             return EXIT_FAILURE;
     }
 

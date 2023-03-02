@@ -13,6 +13,10 @@ static inline bool succeeded(struct rc rc) { return rc.success__; }
 #define FAILURE (struct rc){ false }
 #define SUCCESS (struct rc){ true }
 
+#define LOG_ERRNO(fmt, ...) \
+    fprintf(stderr, fmt ": %s\n", ## __VA_ARGS__, strerror(errno))
+#define LOG_INTERNAL_ERROR() LOG_ERRNO("Internal error")
+
 // Includes ID to improve error reporting (name might be non-unique)
 struct bpf_prog_name {
     const char *name;
@@ -61,19 +65,15 @@ struct xdp_prog {
 
 struct consumer_params {
     bool e_flag;
-    sigset_t *term_sigs; // the caller MUST block these sigs for termination to work
+    int map_fd; // perf buffer to pull from
+    int term_eventfd; // triggers termination if becomes readable
+    struct xdp_prog *progs;
 };
 
 struct rc
-consumer_run_emit_pcapng(
-    int map_fd, struct xdp_prog *progs,
-    const char *output_path, const struct consumer_params *params
-);
+consumer_run_emit_pcapng(const struct consumer_params *params, const char *output_path);
 
 struct rc
-consumer_run_emit_text(
-    int map_fd, struct xdp_prog *progs,
-    const struct consumer_params *params
-);
+consumer_run_emit_text(const struct consumer_params *params);
 
 ///////////////////////////////////////////////////////////////////////

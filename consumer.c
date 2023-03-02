@@ -22,13 +22,14 @@
 #include <pcap/dlt.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <sys/epoll.h>
+#include <sys/prctl.h>
+#include <sys/signal.h>
 
 struct consumer {
     struct perf_buffer *perf;
     int epoll_fd;
-    int signal_fd;
 
-    // guts
     const struct xdp_prog *prog;
     FILE *text_output;
     struct xpcapng_dumper *pcap;
@@ -38,6 +39,9 @@ struct consumer {
 
     int ifindex;
     char if_name[IFNAMSIZ];
+
+    __u64 nsamples;
+    __u64 nsamples_lost;
 };
 
 struct ifkey {
@@ -70,15 +74,12 @@ static enum bpf_perf_event_ret
 consumer_handle_pkt(void *private_data, int cpu, struct perf_event_header *event);
 
 static struct rc
-consumer_init(
-    struct consumer *consumer, int map_fd, struct xdp_prog *progs,
-    const struct consumer_params *params
-) {
+consumer_init(struct consumer *consumer, const struct consumer_params *params) {
 
     memset(consumer, 0, sizeof(*consumer));
     consumer->ifmap = (struct hashmap)HASHMAP_INIT(ifkey_hash_fn, ifkey_equal_fn, 0);
     consumer->packet_id = 1;
-    consumer->prog = progs;
+    consumer->prog = params->progs;
 
     struct perf_event_attr perf_attr = {
         .sample_type = PERF_SAMPLE_RAW | PERF_SAMPLE_TIME,
@@ -94,25 +95,64 @@ consumer_init(
         .ctx = consumer,
     };
 
-    consumer->perf = perf_buffer__new_raw(map_fd, 256, &perf_opts);
+    if (!(consumer->perf = perf_buffer__new_raw(params->map_fd, 256, &perf_opts))) {
+        fprintf(stderr, "Failed to init perf buffer: %s\n", strerror(errno));
+        return FAILURE;
+    }
+
+    struct epoll_event perf_buffer_ready = { .events = EPOLLIN  };
+    struct epoll_event term = { .events = EPOLLIN, .data = { .u32 = 1 } };
+
+    if ((consumer->epoll_fd = epoll_create1(EPOLL_CLOEXEC)) == -1) {
+        LOG_INTERNAL_ERROR();
+        return FAILURE;
+    }
+
+    if (epoll_ctl(consumer->epoll_fd, EPOLL_CTL_ADD,
+                  perf_buffer__epoll_fd(consumer->perf), &perf_buffer_ready
+                 ) != 0) {
+        LOG_INTERNAL_ERROR();
+        return FAILURE;
+    }
+
+    if (epoll_ctl(consumer->epoll_fd, EPOLL_CTL_ADD, params->term_eventfd, &term) != 0) {
+        LOG_INTERNAL_ERROR();
+        return FAILURE;
+    }
+
     return SUCCESS;
 }
 
 static struct rc
 consumer_run(struct consumer *consumer) {
     for (;;) {
-        perf_buffer__poll(consumer->perf, 1000);
+        struct epoll_event event[2];
+        int rc = epoll_wait(consumer->epoll_fd, event, 2, -1);
+        if (rc == -1) {
+            if (errno == EINTR) continue;
+            LOG_ERRNO("epoll_wait");
+            return FAILURE;
+        }
+
+        perf_buffer__consume(consumer->perf);
+
+        // Did term event fire?
+        if (event[0].data.u32 == 1 || rc == 2 && event[1].data.u32 == 1)
+            break;
     }
     return SUCCESS;
 }
 
+static void
+consumer_report_sample_counts(struct consumer *consumer) {
+    fprintf(stderr, "\n%20llu captured\n%20llu lost\n",
+            consumer->nsamples, consumer->nsamples_lost);
+}
+
 struct rc
-consumer_run_emit_pcapng(
-    int map_fd, struct xdp_prog *progs,
-    const char *output_path, const struct consumer_params *params
-) {
+consumer_run_emit_pcapng(const struct consumer_params *params, const char *output_path) {
     struct consumer consumer;
-    if (failed(consumer_init(&consumer, map_fd, progs, params))) return FAILURE;
+    if (failed(consumer_init(&consumer, params))) return FAILURE;
 
     FILE *output = stdout;
 
@@ -135,6 +175,7 @@ consumer_run_emit_pcapng(
         rc = FAILURE;
     }
 
+    consumer_report_sample_counts(&consumer);
     return rc;
 }
 
@@ -152,6 +193,7 @@ tcpdump_pipe(int pipefd[2], const char *flags) {
     case 0:
         if (dup2(in_pipefd[0], STDIN_FILENO) != -1
             && dup2(out_pipefd[1], STDOUT_FILENO) != -1
+            && prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0) == 0
             && setsid() != -1 // detach from controlling terminal,
                               // so that ^C does not interrupt tcpdump
         ) {
@@ -186,16 +228,13 @@ static void *
 merger_threadfunc(void *p);
 
 struct rc
-consumer_run_emit_text(
-    int map_fd, struct xdp_prog *progs,
-    const struct consumer_params *params
-) {
+consumer_run_emit_text(const struct consumer_params *params) {
 
     char tcpdump_flags[128] = "-tnl";
     if (params->e_flag) strcat(tcpdump_flags, "e");
 
     struct consumer consumer;
-    if (failed(consumer_init(&consumer, map_fd, progs, params))) return FAILURE;
+    if (failed(consumer_init(&consumer, params))) return FAILURE;
 
     // tcpdump pipe
     int tcpdump_pipefd[2];
@@ -244,6 +283,8 @@ consumer_run_emit_text(
 
     pthread_join(merger_thread, NULL);
 
+    consumer_report_sample_counts(&consumer);
+
     return rc;
 }
 
@@ -266,9 +307,23 @@ static enum bpf_perf_event_ret
 consumer_handle_pkt(void *private_data, int cpu, struct perf_event_header *event) {
     struct consumer *consumer = private_data;
 
-    if (event->type == PERF_RECORD_SAMPLE) {
+    switch (event->type) {
+
+    case PERF_RECORD_LOST:
+
         struct {
-            struct perf_event_header *h;
+            struct perf_event_header h;
+            __u64 id;
+            __u64 lost;
+        } *lost = (void *)event;
+
+        consumer->nsamples_lost += lost->lost;
+        break;
+
+    case PERF_RECORD_SAMPLE:
+
+        struct {
+            struct perf_event_header h;
             __u64 time;
             __u32 size;
             struct trace_meta meta;
@@ -376,6 +431,8 @@ consumer_handle_pkt(void *private_data, int cpu, struct perf_event_header *event
             // TODO fail
         }
 
+        consumer->nsamples += 1;
+        break;
     }
 
     return LIBBPF_PERF_EVENT_CONT;
