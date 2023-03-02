@@ -96,7 +96,7 @@ consumer_init(struct consumer *consumer, const struct consumer_params *params) {
     };
 
     if (!(consumer->perf = perf_buffer__new_raw(params->map_fd, 256, &perf_opts))) {
-        fprintf(stderr, "Failed to init perf buffer: %s\n", strerror(errno));
+        LOG_ERRNO("Failed to init perf buffer");
         return FAILURE;
     }
 
@@ -158,20 +158,20 @@ consumer_run_emit_pcapng(const struct consumer_params *params, const char *outpu
 
     if (strcmp(output_path, "-")) {
         if (!(output = fopen(output_path, "w"))) {
-            fprintf(stderr, "Failed to open '%s': %s\n", output_path, strerror(errno));
+            LOG_ERRNO("Failed to open '%s'", output_path);
             return FAILURE;
         }
     }
 
     if (!(consumer.pcap = xpcapng_dump_open(output, 0, 0, 0, 0))) {
-        fprintf(stderr, "Failed to write pcapng header: %s", strerror(errno));
+        LOG_ERRNO("Failed to write pcapng header");
         return FAILURE;
     }
 
     struct rc rc = consumer_run(&consumer);
 
     if (output != stdout && fclose(output) != 0) {
-        fprintf(stderr, "Failed to flush output: %s\n", strerror(errno));
+        LOG_ERRNO("Failed to flush output");
         rc = FAILURE;
     }
 
@@ -184,7 +184,7 @@ tcpdump_pipe(int pipefd[2], const char *flags) {
 
     int in_pipefd[2], out_pipefd[2];
     if (pipe2(in_pipefd, O_CLOEXEC) != 0 || pipe2(out_pipefd, O_CLOEXEC) != 0) {
-        fprintf(stderr, "Internal error: %s\n", strerror(errno));
+        LOG_INTERNAL_ERROR();
         return FAILURE;
     }
 
@@ -203,12 +203,12 @@ tcpdump_pipe(int pipefd[2], const char *flags) {
             char *argv[] = { prog, "-r", "-", (char *)flags, NULL };
             // extra pipe ends are closed due to O_CLOEXEC
             execve(prog, argv, environ);
-            fprintf(stderr, "Error running %s: %s\n", prog, strerror(errno));
+            LOG_ERRNO("Error running %s", prog);
             return FAILURE;
         }
         // fallthrough
     case -1:
-        fprintf(stderr, "Internal error: %s\n", strerror(errno));
+        LOG_INTERNAL_ERROR();
         return FAILURE;
     }
 
@@ -242,7 +242,7 @@ consumer_run_emit_text(const struct consumer_params *params) {
     FILE *tcpdump_in = fdopen(tcpdump_pipefd[1], "w");
     FILE *tcpdump_out = fdopen(tcpdump_pipefd[0], "r");
     if (!tcpdump_in || !tcpdump_out) {
-        fprintf(stderr, "Internal error: %s\n", strerror(errno));
+        LOG_INTERNAL_ERROR();
         return FAILURE;
     }
 
@@ -253,14 +253,14 @@ consumer_run_emit_text(const struct consumer_params *params) {
         || !(textpipe_in = fdopen(textpipe_pipefd[1], "w"))
         || !(textpipe_out = fdopen(textpipe_pipefd[0], "r"))
         ) {
-        fprintf(stderr, "Internal error: %s\n", strerror(errno));
+        LOG_INTERNAL_ERROR();
         return FAILURE;
     }
     setvbuf(textpipe_in, NULL, _IOLBF, 0);
 
     consumer.text_output = textpipe_in;
     if (!(consumer.pcap = xpcapng_dump_open(tcpdump_in, 0, 0, 0, 0))) {
-        fprintf(stderr, "Failed to write pcapng header: %s", strerror(errno));
+        LOG_ERRNO("Failed to write pcapng header");
         return FAILURE;
     }
 
@@ -272,7 +272,7 @@ consumer_run_emit_text(const struct consumer_params *params) {
     pthread_t merger_thread;
     int err = pthread_create(&merger_thread, NULL, merger_threadfunc, &merger_params);
     if (err) {
-        fprintf(stderr, "Internal error: %s\n", strerror(err));
+        LOG_INTERNAL_ERROR();
         return FAILURE;
     }
 

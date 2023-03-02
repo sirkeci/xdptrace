@@ -27,7 +27,7 @@ xdp_prog_init_with_id(int id, struct xdp_prog *buf, struct xdp_prog **prog) {
 
     if ((buf->prog_fd = bpf_prog_get_fd_by_id(id)) < 0) {
         if (errno == ENOENT) return 0;
-        fprintf(stderr, "Failed to open BPF program %d: %s\n", id, strerror(errno));
+        LOG_ERRNO("Failed to open BPF program %d", id);
         return -1;
     }
 
@@ -35,8 +35,7 @@ xdp_prog_init_with_id(int id, struct xdp_prog *buf, struct xdp_prog **prog) {
     __u32 len = sizeof(info);
 
     if (bpf_obj_get_info_by_fd(buf->prog_fd, &info, &len) != 0) {
-        fprintf(stderr, "Failed to obtain info on BPF program %d: %s\n",
-                id, strerror(errno));
+        LOG_ERRNO("Failed to obtain info on BPF program %d", id);
         rc = -1;
         goto out_close;
     }
@@ -53,8 +52,7 @@ xdp_prog_init_with_id(int id, struct xdp_prog *buf, struct xdp_prog **prog) {
     }
 
     if (!(buf->btf = btf__load_from_kernel_by_id(info.btf_id))) {
-        fprintf(stderr, "Failed to load BTF for %s (%d): %s\n",
-                        info.name, id, strerror(errno));
+        LOG_ERRNO("Failed to load BTF for %s (%d)", info.name, id);
         rc = -1;
         goto out_close;
     }
@@ -138,7 +136,7 @@ int main(int argc, char **argv) {
 
         if (bpf_prog_get_next_id(id, &id) != 0) {
             if (errno == ENOENT) break;
-            fprintf(stderr, "Error listing BPF programs: %s\n", strerror(errno));
+            LOG_ERRNO("Error listing BPF programs");
             return EXIT_FAILURE;
         }
 
@@ -160,7 +158,7 @@ int main(int argc, char **argv) {
     for (int i = 0; i != n; ++i) {
 
         if (!(prog[i].tk = trace_kern__open())) {
-            fprintf(stderr, "Failed to open tracing program: %s\n", strerror(errno));
+            LOG_ERRNO("Failed to open tracing program");
             return EXIT_FAILURE;
         }
 
@@ -174,8 +172,8 @@ int main(int argc, char **argv) {
                 prog[i].prog_fd,
                 "xdp_trace_exit__") != 0
         ) {
-            fprintf(stderr, "Failed to prepare tracing program for %s (%d): %s\n",
-                    prog[i].name.name, prog[i].name.id, strerror(errno));
+            LOG_ERRNO("Failed to prepare tracing program for %s (%d)",
+                       prog[i].name.name, prog[i].name.id);
             if (keep_going) continue;
             return EXIT_FAILURE;
         }
@@ -188,16 +186,15 @@ int main(int argc, char **argv) {
                     prog[i].tk->maps.trace_perf_map,
                     bpf_map__fd(prog[0].tk->maps.trace_perf_map)) != 0
             ) {
-                fprintf(stderr, "Failed to configure maps for the tracing program: %s\n",
-                        strerror(errno));
+                LOG_ERRNO("Failed to configure maps for the tracing program");
                 return EXIT_FAILURE;
             }
         }
 
         // Load
         if (trace_kern__load(prog[i].tk) != 0) {
-            fprintf(stderr, "Failed to load tracing program for %s (%d): %s\n",
-                    prog[i].name.name, prog[i].name.id, strerror(errno));
+            LOG_ERRNO("Failed to load tracing program for %s (%d)",
+                      prog[i].name.name, prog[i].name.id);
             if (keep_going) continue;
             return EXIT_FAILURE;
         }
@@ -209,8 +206,7 @@ int main(int argc, char **argv) {
             bpf_program__attach(prog[i].tk->progs.xdp_exit_hook);
 
         if (!prog[i].tk->links.xdp_entry_hook || !prog[i].tk->links.xdp_exit_hook) {
-            fprintf(stderr, "Failed to hook %s (%d): %s\n",
-                    prog[i].name.name, prog[i].name.id, strerror(errno));
+            LOG_ERRNO("Failed to hook %s (%d)", prog[i].name.name, prog[i].name.id);
             return EXIT_FAILURE;
         }
     }
