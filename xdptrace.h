@@ -73,6 +73,7 @@ xdp_prog(struct xdp_progs *progs, size_t i) { return &progs->progs[i]; }
 
 struct consumer_params {
     bool e_flag;
+    bool t_flag;
     int map_fd; // perf buffer to pull from
     int term_eventfd; // triggers termination if becomes readable
     struct xdp_progs *progs;

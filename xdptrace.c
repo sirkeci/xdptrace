@@ -133,13 +133,15 @@ int main(int argc, char **argv) {
 
     // Parse command line
     int opt;
-    while ((opt = getopt(argc, argv, "w:e")) != -1) {
+    while ((opt = getopt(argc, argv, "w:et")) != -1) {
 
         switch (opt) {
         case 'w':
             output_filename = optarg; break;
         case 'e':
             consumer_params.e_flag = true; break;
+        case 't':
+            consumer_params.t_flag = true; break;
         }
     }
 

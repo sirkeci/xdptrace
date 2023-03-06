@@ -44,6 +44,7 @@ struct consumer {
     __u64 nsamples_lost;
 
     int name_col_width;
+    bool t_flag;
 };
 
 struct ifkey {
@@ -89,6 +90,7 @@ consumer_init(struct consumer *consumer, const struct consumer_params *params) {
         .config = PERF_COUNT_SW_BPF_OUTPUT,
         .sample_period = 1,
         .wakeup_events = 1,
+        .clockid = CLOCK_REALTIME,
     };
 
     struct perf_buffer_raw_opts perf_opts = {
@@ -128,6 +130,7 @@ consumer_init(struct consumer *consumer, const struct consumer_params *params) {
             consumer->name_col_width = len;
     }
 
+    consumer->t_flag = params->t_flag;
     return SUCCESS;
 }
 
@@ -391,8 +394,21 @@ consumer_handle_pkt(void *private_data, int cpu, struct perf_event_header *event
             labeli = hook_index;
         }
 
-        if (consumer->text_output)
-            fprintf(consumer->text_output, "  %-*s \e\n", consumer->name_col_width, label);
+        if (consumer->text_output) {
+            char ts[32];
+            if (consumer->t_flag) {
+                ts[0] = 0;
+            } else {
+                __u64 sec = sample->time / (__u64)1e9;
+                __u64 nsec = sample->time % (__u64)1e9;
+                sprintf(ts, "%02d:%02d:%02d:%06d  ",
+                        (int)((sec / 60 / 60) % 24),
+                        (int)((sec / 60) % 60),
+                        (int)(sec % 60),
+                        (int)(nsec / 1000));
+            }
+            fprintf(consumer->text_output, "  %s%-*s  \e\n", ts, consumer->name_col_width, label);
+        }
 
         // Lookup or create PCAP interface record
         long pcap_ifindex;
@@ -404,8 +420,9 @@ consumer_handle_pkt(void *private_data, int cpu, struct perf_event_header *event
                 pcap_if_name, sizeof(pcap_if_name), "%s:%s",
                 sample->meta.if_name, label
             );
+            const int nsec_ts_resol = 9;
             pcap_ifindex = xpcapng_dump_add_interface(
-                consumer->pcap, 262144, pcap_if_name, 0, 0, 0, 0, 0,
+                consumer->pcap, 262144, pcap_if_name, 0, 0, 0, nsec_ts_resol, 0,
                 // tcpdump doesn't support multiple interfaces with
                 // different link types; wrap in PPI if piping through tcpdump
                 consumer->text_output ? DLT_PPI : meta->link_type
@@ -440,7 +457,7 @@ consumer_handle_pkt(void *private_data, int cpu, struct perf_event_header *event
         }
 
         if (!xpcapng_dump_enhanced_pkt(
-                consumer->pcap, pcap_ifindex, pkt, pkt_len, cap_len, 0, &opts
+                consumer->pcap, pcap_ifindex, pkt, pkt_len, cap_len, sample->time, &opts
             )) {
             LOG_ERRNO("Failed to save packet to pcap file");
             return LIBBPF_PERF_EVENT_ERROR;
