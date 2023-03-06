@@ -134,7 +134,10 @@ consumer_run(struct consumer *consumer) {
             return FAILURE;
         }
 
-        perf_buffer__consume(consumer->perf);
+        if (perf_buffer__consume(consumer->perf) != 0) {
+            LOG_ERRNO("perf_buffer__consume");
+            return FAILURE;
+        }
 
         // Did term event fire?
         if (event[0].data.u32 == 1 || rc == 2 && event[1].data.u32 == 1)
@@ -400,15 +403,18 @@ consumer_handle_pkt(void *private_data, int cpu, struct perf_event_header *event
                 consumer->text_output ? DLT_PPI : meta->link_type
             );
             if (pcap_ifindex < 0) {
-                // TODO fail
+                LOG_ERRNO("Failed to append record to pcap file");
+                return LIBBPF_PERF_EVENT_ERROR;
             }
             struct ifkey *ifkey = malloc(sizeof(*ifkey));
             if (!ifkey) {
-                // TODO fail
+                LOG_INTERNAL_ERROR();
+                return LIBBPF_PERF_EVENT_ERROR;
             }
             memcpy(ifkey, &transient_ifkey, sizeof(*ifkey));
             if (hashmap__set(&consumer->ifmap, ifkey, pcap_ifindex, NULL, NULL) != 0) {
-                // TODO fail
+                LOG_INTERNAL_ERROR();
+                return LIBBPF_PERF_EVENT_ERROR;
             }
         }
 
@@ -428,7 +434,8 @@ consumer_handle_pkt(void *private_data, int cpu, struct perf_event_header *event
         if (!xpcapng_dump_enhanced_pkt(
                 consumer->pcap, pcap_ifindex, pkt, pkt_len, cap_len, 0, &opts
             )) {
-            // TODO fail
+            LOG_ERRNO("Failed to save packet to pcap file");
+            return LIBBPF_PERF_EVENT_ERROR;
         }
 
         consumer->nsamples += 1;
