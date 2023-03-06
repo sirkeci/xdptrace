@@ -42,6 +42,8 @@ struct consumer {
 
     __u64 nsamples;
     __u64 nsamples_lost;
+
+    int name_col_width;
 };
 
 struct ifkey {
@@ -79,7 +81,7 @@ consumer_init(struct consumer *consumer, const struct consumer_params *params) {
     memset(consumer, 0, sizeof(*consumer));
     consumer->ifmap = (struct hashmap)HASHMAP_INIT(ifkey_hash_fn, ifkey_equal_fn, 0);
     consumer->packet_id = 1;
-    consumer->prog = params->progs;
+    consumer->prog = params->progs->progs;
 
     struct perf_event_attr perf_attr = {
         .sample_type = PERF_SAMPLE_RAW | PERF_SAMPLE_TIME,
@@ -118,6 +120,12 @@ consumer_init(struct consumer *consumer, const struct consumer_params *params) {
     if (epoll_ctl(consumer->epoll_fd, EPOLL_CTL_ADD, params->term_eventfd, &term) != 0) {
         LOG_INTERNAL_ERROR();
         return FAILURE;
+    }
+
+    for (size_t i = 0; i != params->progs->nprogs; ++i) {
+        int len = (int)strlen(xdp_prog(params->progs, i)->name.name);
+        if (len > consumer->name_col_width)
+            consumer->name_col_width = len;
     }
 
     return SUCCESS;
@@ -384,7 +392,7 @@ consumer_handle_pkt(void *private_data, int cpu, struct perf_event_header *event
         }
 
         if (consumer->text_output)
-            fprintf(consumer->text_output, "  %-12s\e\n", label);
+            fprintf(consumer->text_output, "  %-*s \e\n", consumer->name_col_width, label);
 
         // Lookup or create PCAP interface record
         long pcap_ifindex;

@@ -53,6 +53,11 @@ parse_xdp_prog_meta(struct btf *btf, struct bpf_prog_name name,
 
 ///////////////////////////////////////////////////////////////////////
 
+struct xdp_progs {
+    size_t nprogs, capacity;
+    struct xdp_prog *progs;
+};
+
 struct xdp_prog {
     struct bpf_prog_name  name;
     int                   prog_fd;
@@ -63,11 +68,14 @@ struct xdp_prog {
     struct trace_kern    *tk;
 };
 
+static inline struct xdp_prog *
+xdp_prog(struct xdp_progs *progs, size_t i) { return &progs->progs[i]; }
+
 struct consumer_params {
     bool e_flag;
     int map_fd; // perf buffer to pull from
     int term_eventfd; // triggers termination if becomes readable
-    struct xdp_prog *progs;
+    struct xdp_progs *progs;
 };
 
 struct rc
