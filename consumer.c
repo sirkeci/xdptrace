@@ -91,6 +91,8 @@ consumer_init(struct consumer *consumer, const struct consumer_params *params) {
         .sample_period = 1,
         .wakeup_events = 1,
         .clockid = CLOCK_REALTIME,
+        .use_clockid = 1,
+        .size = sizeof(perf_attr),
     };
 
     struct perf_buffer_raw_opts perf_opts = {
