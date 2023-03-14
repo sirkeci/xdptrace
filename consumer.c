@@ -452,7 +452,14 @@ consumer_handle_pkt(void *private_data, int cpu, struct perf_event_header *event
         struct xpcapng_epb_options_s opts = {
             .packetid = (void *)&consumer->packet_id,
             .ppi_linktype = consumer->text_output ? meta->link_type : 0,
+            .queue = &sample->meta.rx_queue,
         };
+
+        int64_t pcap_xdp_verdict;
+        if (hook_index & 1) {
+            pcap_xdp_verdict = sample->meta.res;
+            opts.xdp_verdict = &pcap_xdp_verdict;
+        }
 
         if (meta->pseudo_type_id > 0) {
             opts.comment = "TODO: pseudohdr content appears here";
